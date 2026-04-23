@@ -1,0 +1,227 @@
+From 76428862ff8bbcfaa5146b9c6f04fa9562fa7cbb Mon Sep 17 00:00:00 2001
+From: liuyuyan6100 <liuyuyan6100@163.com>
+Date: Thu, 23 Apr 2026 08:39:54 +0000
+Subject: [PATCH 5/6] chore: add .devcontainer config for GitHub Codespaces
+
+Includes post-start.sh for automatic env setup, monitor.sh for
+health checks, and sync-back.sh for pushing tokens to VPS.
+---
+ .devcontainer/devcontainer.json | 26 ++++++++++++++
+ .devcontainer/monitor.sh        | 64 +++++++++++++++++++++++++++++++++
+ .devcontainer/post-start.sh     | 37 +++++++++++++++++++
+ .devcontainer/sync-back.sh      | 55 ++++++++++++++++++++++++++++
+ 4 files changed, 182 insertions(+)
+ create mode 100644 .devcontainer/devcontainer.json
+ create mode 100644 .devcontainer/monitor.sh
+ create mode 100644 .devcontainer/post-start.sh
+ create mode 100644 .devcontainer/sync-back.sh
+
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+new file mode 100644
+index 0000000..274074b
+--- /dev/null
++++ b/.devcontainer/devcontainer.json
+@@ -0,0 +1,26 @@
++{
++  "name": "openai-cpa-codespaces",
++  "image": "python:3.11-slim",
++  "features": {
++    "ghcr.io/devcontainers/features/sshd:1": {}
++  },
++  "postCreateCommand": "apt-get update && apt-get install -y git curl procps python3-venv openssh-client && python3 -m venv .venv && . .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -r requirements.txt && mkdir -p .codespaces/logs .codespaces/run .codespaces/bin",
++  "postStartCommand": "bash .devcontainer/post-start.sh",
++  "customizations": {
++    "codespaces": {
++      "openFiles": ["data/config.yaml"]
++    },
++    "vscode": {
++      "settings": {
++        "python.defaultInterpreterPath": "/workspaces/${localWorkspaceFolderBasename}/.venv/bin/python"
++      }
++    }
++  },
++  "forwardPorts": [8000],
++  "portsAttributes": {
++    "8000": {
++      "label": "openai-cpa web ui",
++      "onAutoForward": "notify"
++    }
++  }
++}
+diff --git a/.devcontainer/monitor.sh b/.devcontainer/monitor.sh
+new file mode 100644
+index 0000000..962a223
+--- /dev/null
++++ b/.devcontainer/monitor.sh
+@@ -0,0 +1,64 @@
++#!/bin/bash
++# Monitor daemon: track success/failure rate, auto-stop on threshold
++
++REPO_DIR="$(dirname "$0")/.."
++cd "$REPO_DIR"
++
++LOG_DIR=".codespaces/logs"
++RUN_DIR=".codespaces/run"
++MIN_RUNTIME_MINUTES=${MIN_RUNTIME_MINUTES:-60}
++MAX_CONSECUTIVE_FAILS=${MAX_CONSECUTIVE_FAILS:-3}
++CHECK_INTERVAL=${CHECK_INTERVAL:-300}  # 5 minutes
++
++consecutive_fails=0
++start_time=$(date +%s)
++last_account_count=0
++
++while true; do
++    sleep "$CHECK_INTERVAL"
++
++    now=$(date +%s)
++    elapsed=$(( (now - start_time) / 60 ))
++
++    # Check if openai-cpa is still running
++    if [ -f "$RUN_DIR/openai-cpa.pid" ]; then
++        pid=$(cat "$RUN_DIR/openai-cpa.pid")
++        if ! kill -0 "$pid" 2>/dev/null; then
++            echo "[$(date '+%Y-%m-%d %H:%M:%S')] openai-cpa process died. Exiting monitor." >> "$LOG_DIR/monitor.log"
++            exit 1
++        fi
++    fi
++
++    # Count new accounts from log
++    # Look for success indicators in openai-cpa log
++    current_success=$(grep -cE '注册成功|凭据提取成功|一气呵成' "$LOG_DIR/openai-cpa.log" 2>/dev/null || echo 0)
++    current_fail=$(grep -cE '注册失败|风控|手机验证|Cloudflare|403|429' "$LOG_DIR/openai-cpa.log" 2>/dev/null || echo 0)
++
++    # Simple heuristic: if no new success in last check window, count as fail
++    # This is a rough estimate; real stats should come from DB
++    if [ "$current_success" -le "$last_account_count" ]; then
++        consecutive_fails=$((consecutive_fails + 1))
++        echo "[$(date '+%Y-%m-%d %H:%M:%S')] No new success this window. consecutive_fails=$consecutive_fails elapsed=${elapsed}m" >> "$LOG_DIR/monitor.log"
++    else
++        consecutive_fails=0
++        last_account_count=$current_success
++        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Success detected. Total=$current_success elapsed=${elapsed}m" >> "$LOG_DIR/monitor.log"
++    fi
++
++    # Auto-stop conditions
++    if [ "$elapsed" -lt "$MIN_RUNTIME_MINUTES" ]; then
++        # Below minimum runtime, never stop regardless of failures
++        continue
++    fi
++
++    if [ "$consecutive_fails" -ge "$MAX_CONSECUTIVE_FAILS" ]; then
++        echo "[$(date '+%Y-%m-%d %H:%M:%S')] THRESHOLD REACHED: $consecutive_fails consecutive failures. Stopping." >> "$LOG_DIR/monitor.log"
++        # Stop openai-cpa gracefully
++        if [ -f "$RUN_DIR/openai-cpa.pid" ]; then
++            kill "$(cat "$RUN_DIR/openai-cpa.pid")" 2>/dev/null || true
++        fi
++        # Trigger sync-back before exit
++        bash .devcontainer/sync-back.sh
++        exit 0
++    fi
++done
+diff --git a/.devcontainer/post-start.sh b/.devcontainer/post-start.sh
+new file mode 100644
+index 0000000..91d69f2
+--- /dev/null
++++ b/.devcontainer/post-start.sh
+@@ -0,0 +1,37 @@
++#!/bin/bash
++# Codespace openai-cpa conservative rotation starter
++# Strategy: low-frequency, auto-stop on failure threshold
++
++set -e
++
++REPO_DIR="/workspaces/$(basename $(git remote get-url origin 2>/dev/null | sed 's|.*\/||;s|\.git||') 2>/dev/null || echo 'openai-cpa-codespaces')"
++cd "$REPO_DIR" 2>/dev/null || cd /workspaces/openai-cpa-codespaces 2>/dev/null || cd "$(dirname "$0")/.."
++
++LOG_DIR=".codespaces/logs"
++RUN_DIR=".codespaces/run"
++mkdir -p "$LOG_DIR" "$RUN_DIR"
++
++# Patch host.docker.internal bug for Codespaces
++if [ -f "utils/config.py" ]; then
++    sed -i 's|if os.path.exists("/.dockerenv")|if os.path.exists("/.dockerenv") and not os.environ.get("CODESPACES")|' utils/config.py 2>/dev/null || true
++fi
++if [ -f "utils/proxy_manager.py" ]; then
++    sed -i "s|_IS_IN_DOCKER = os.path.exists('/.dockerenv')|_IS_IN_DOCKER = os.path.exists('/.dockerenv') and not os.environ.get('CODESPACES')|" utils/proxy_manager.py 2>/dev/null || true
++fi
++
++# Check if config exists
++if [ ! -f "data/config.yaml" ]; then
++    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: data/config.yaml not found. Please copy from config.example.yaml and configure." >> "$LOG_DIR/codespace.log"
++    exit 1
++fi
++
++# Start openai-cpa with conservative settings
++# Use nohup + disown since tmux/screen may not be available
++nohup .venv/bin/python wfxl_openai_regst.py >> "$LOG_DIR/openai-cpa.log" 2>&1 &
++PID=$!
++echo $PID > "$RUN_DIR/openai-cpa.pid"
++echo "[$(date '+%Y-%m-%d %H:%M:%S')] Started openai-cpa PID=$PID" >> "$LOG_DIR/codespace.log"
++
++# Start monitor daemon
++nohup bash .devcontainer/monitor.sh >> "$LOG_DIR/monitor.log" 2>&1 &
++echo $! > "$RUN_DIR/monitor.pid"
+diff --git a/.devcontainer/sync-back.sh b/.devcontainer/sync-back.sh
+new file mode 100644
+index 0000000..240d11a
+--- /dev/null
++++ b/.devcontainer/sync-back.sh
+@@ -0,0 +1,55 @@
++#!/bin/bash
++# Sync tokens from Codespace back to VPS
++# Requires VPS_SSH_HOST, VPS_SSH_USER, VPS_SSH_KEY to be set in environment
++
++REPO_DIR="$(dirname "$0")/.."
++cd "$REPO_DIR"
++
++LOG_DIR=".codespaces/logs"
++VPS_AUTHS_DIR="/home/ubuntu/cpa/data/auths"
++VPS_SSH_PORT="${VPS_SSH_PORT:-22}"
++
++if [ -z "$VPS_SSH_HOST" ] || [ -z "$VPS_SSH_USER" ]; then
++    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: VPS_SSH_HOST and VPS_SSH_USER must be set" >> "$LOG_DIR/sync-back.log"
++    exit 1
++fi
++
++# Write SSH key if provided via env
++if [ -n "$VPS_SSH_KEY" ]; then
++    mkdir -p ~/.ssh
++    echo "$VPS_SSH_KEY" > ~/.ssh/codespace_sync_key
++    chmod 600 ~/.ssh/codespace_sync_key
++    SSH_OPTS="-i ~/.ssh/codespace_sync_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
++else
++    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
++fi
++
++# Find new token files
++TOKEN_DIR="data/tokens"
++if [ ! -d "$TOKEN_DIR" ]; then
++    TOKEN_DIR="cpa/data/auths"
++fi
++if [ ! -d "$TOKEN_DIR" ]; then
++    TOKEN_DIR="/home/ubuntu/cpa/data/auths"
++fi
++
++# Fallback: find any json files with oauth tokens
++json_files=$(find . -name '*.json' -path '*/auths/*' 2>/dev/null | head -50)
++if [ -z "$json_files" ]; then
++    json_files=$(find . -name 'codex_oauth_*.json' 2>/dev/null | head -50)
++fi
++
++if [ -z "$json_files" ]; then
++    echo "[$(date '+%Y-%m-%d %H:%M:%S')] No token files found to sync" >> "$LOG_DIR/sync-back.log"
++    exit 0
++fi
++
++# Sync via SCP
++echo "$json_files" | tar czf - -T - | ssh $SSH_OPTS -p "$VPS_SSH_PORT" "$VPS_SSH_USER@$VPS_SSH_HOST" \
++    "mkdir -p $VPS_AUTHS_DIR && cd $VPS_AUTHS_DIR && tar xzf -"
++
++if [ $? -eq 0 ]; then
++    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Synced $(echo "$json_files" | wc -l) tokens to $VPS_SSH_HOST" >> "$LOG_DIR/sync-back.log"
++else
++    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sync failed" >> "$LOG_DIR/sync-back.log"
++fi
+-- 
+2.43.0
+

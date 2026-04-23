@@ -1,0 +1,50 @@
+{
+  "name": "openai-cpa-codespaces",
+  "image": "python:3.11-slim",
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {}
+  },
+  "postCreateCommand": "apt-get update && apt-get install -y -qq git curl procps openssh-client netcat-openbsd && mkdir -p .codespaces/logs .codespaces/run",
+  "postStartCommand": "bash .devcontainer/post-start.sh",
+  "customizations": {
+    "codespaces": {
+      "openFiles": []
+    },
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/workspaces/openai-cpa-runtime/.venv/bin/python"
+      }
+    }
+  },
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "openai-cpa web ui",
+      "onAutoForward": "notify",
+      "visibility": "public"
+    }
+  },
+  "secrets": {
+    "CPA_FREEMAIL_KEY": {
+      "description": "Freemail API Key"
+    },
+    "CPA_SUB2API_KEY": {
+      "description": "Sub2API / CPA management API Key or Token"
+    },
+    "CPA_SUB2API_URL": {
+      "description": "Sub2API base URL (default: https://sub2.aiclawonline.website)"
+    },
+    "CPA_SUB2API_ADMIN_EMAIL": {
+      "description": "Sub2API admin email (default: admin@aiclawonline.website)"
+    },
+    "CPA_SUB2API_ADMIN_PASSWORD": {
+      "description": "Sub2API admin password"
+    },
+    "CPA_WEB_PASSWORD": {
+      "description": "openai-cpa web admin password"
+    },
+    "CPA_API_SECRET": {
+      "description": "Remote sync api secret key"
+    }
+  }
+}

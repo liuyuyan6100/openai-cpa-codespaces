@@ -1,0 +1,30 @@
+From cc89946a87a169a300e4dfaff04ba53d00365c7c Mon Sep 17 00:00:00 2001
+From: liuyuyan6100 <liuyuyan6100@163.com>
+Date: Thu, 23 Apr 2026 08:40:14 +0000
+Subject: [PATCH 6/6] chore: update .gitignore for venv and Codespaces
+
+---
+ .gitignore | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/.gitignore b/.gitignore
+index 930b36a..3b5e2b0 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -23,4 +23,11 @@ utils/sentinel.py
+ data
+ utils/auth_core/
+ !utils/auth_core.pyd
+-test.py
+\ No newline at end of file
++test.py
++# Virtual environments
++.venv/
++.venv311/
++venv/
++
++# Codespaces local files
++.codespaces/
+-- 
+2.43.0
+

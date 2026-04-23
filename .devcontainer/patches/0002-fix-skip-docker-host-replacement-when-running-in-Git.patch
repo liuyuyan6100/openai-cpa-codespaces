@@ -1,0 +1,42 @@
+From 9ad5086ab92df94b9a64d82bc8bf1549053f99bf Mon Sep 17 00:00:00 2001
+From: liuyuyan6100 <liuyuyan6100@163.com>
+Date: Thu, 23 Apr 2026 08:39:03 +0000
+Subject: [PATCH 2/6] fix: skip docker host replacement when running in GitHub
+ Codespaces
+
+Codespace containers have /.dockerenv but should not rewrite
+127.0.0.1 to host.docker.internal because services run natively.
+---
+ utils/config.py        | 2 +-
+ utils/proxy_manager.py | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/utils/config.py b/utils/config.py
+index f720bd1..6f6c1ad 100644
+--- a/utils/config.py
++++ b/utils/config.py
+@@ -25,7 +25,7 @@ def ts() -> str:
+ def format_docker_url(url: str) -> str:
+     if not url or not isinstance(url, str):
+         return url
+-    if os.path.exists("/.dockerenv"):
++    if os.path.exists("/.dockerenv") and not os.environ.get("CODESPACES"):
+         url = url.replace("127.0.0.1", "host.docker.internal")
+         url = url.replace("localhost", "host.docker.internal")
+     return url
+diff --git a/utils/proxy_manager.py b/utils/proxy_manager.py
+index 0882c2a..fb9ec9d 100644
+--- a/utils/proxy_manager.py
++++ b/utils/proxy_manager.py
+@@ -17,7 +17,7 @@ FASTEST_MODE = False
+ PROXY_GROUP_NAME = "节点选择"
+ CLASH_SECRET = ""
+ NODE_BLACKLIST = []
+-_IS_IN_DOCKER = os.path.exists('/.dockerenv')
++_IS_IN_DOCKER = os.path.exists('/.dockerenv') and not os.environ.get('CODESPACES')
+ _global_switch_lock = threading.Lock()
+ _last_switch_time = 0
+ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+-- 
+2.43.0
+
