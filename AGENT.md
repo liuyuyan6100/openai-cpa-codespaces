@@ -287,16 +287,15 @@ openai-cpa 和 Sub2API 都会频繁升级。每次升级都可能引入 breaking
 
 ```
 .codespaces/snapshots/
-  ├── latest/              -> 软链接到最新快照
-  ├── 20260424-020000/     -> 具体快照目录
+  ├── latest/              -> 唯一快照（已知良好状态）
   │   ├── data/
   │   │   ├── data.db
   │   │   └── config.yaml
   │   └── tag.txt          -> 当时的 openai-cpa tag
 ```
 
-- 保留最近 **10 个**快照，自动清理旧的
-- `latest` 软链接始终指向最近一次快照
+- 只保留 **一个** `latest` 快照，覆盖式更新
+- 快照在**健康检查通过后**才会创建，确保保存的是已知可用状态
 
 手动创建快照：
 ```bash
@@ -319,16 +318,13 @@ bash /workspaces/openai-cpa-codespaces/.devcontainer/scripts/upgrade.sh v13.0.0
 4. 如果 patch 失败 → 自动回滚
 5. 启动引擎 → health check（60s 超时）
 6. 如果 health check 失败 → **自动回滚到上一个快照**
-7. 成功后更新 `latest` 链接
+7. 成功后覆盖 `latest` 快照（记录新的已知良好状态）
 
 ### 10.3 运行时回滚
 
 ```bash
-# 回滚到最近一次快照
+# 回滚到上一个已知良好状态
 bash /workspaces/openai-cpa-codespaces/.devcontainer/scripts/rollback.sh
-
-# 回滚到指定快照
-bash /workspaces/openai-cpa-codespaces/.devcontainer/scripts/rollback.sh 20260424-020000
 ```
 
 ### 10.4 重建时自动回滚
