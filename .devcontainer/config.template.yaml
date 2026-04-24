@@ -6,7 +6,7 @@
 
 reg_mode: "protocol"
 # 可选值: "imap" / "freemail" / "cloudflare_temp_email" / "cloudmail" / "mail_curl" / "luckmail"
-email_api_mode: "cloudflare_temp_email"
+email_api_mode: "freemail"
 
 # [基础配置: cloudflare_temp_email / imap / cloudmail 共享]
 # 你的域名 (支持逗号分隔多域名随机轮换) 如果只有一个域名就只填一个域名
@@ -63,9 +63,9 @@ local_microsoft:
 # [模式 "freemail" 专属]
 freemail:
   #访问链接
-  api_url: "https://your-domain.com"
+  api_url: "https://mailfree.liuyuyan6100.workers.dev"
   #JWTTOKEN
-  api_token: 
+  api_token: "${CPA_FREEMAIL_KEY:-fjiwaiv23164s4fdsfs6df6wfdx}"
   admin_username: 
   admin_password: 
 
