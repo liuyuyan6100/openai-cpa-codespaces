@@ -1,7 +1,7 @@
 #!/bin/bash
 # Codespace openai-cpa launcher (python:3.11-slim native venv edition)
 # Pulls official tag, applies local patches, injects config from env/secrets, starts engine
-# v3: pre-start snapshot + post-start health check + auto-rollback on failure
+# v3: single snapshot + post-start health check + auto-rollback on failure
 
 set -euo pipefail
 
@@ -12,19 +12,13 @@ PATCH_DIR="$CONFIG_DIR/.devcontainer/patches"
 SCRIPTS_DIR="$CONFIG_DIR/.devcontainer/scripts"
 LOG_DIR="$CONFIG_DIR/.codespaces/logs"
 RUN_DIR="$CONFIG_DIR/.codespaces/run"
-SNAPSHOT_DIR="$CONFIG_DIR/.codespaces/snapshots"
+SNAPSHOT_DIR="$CONFIG_DIR/.codespaces/snapshots/latest"
 
-mkdir -p "$LOG_DIR" "$RUN_DIR" "$SNAPSHOT_DIR"
+mkdir -p "$LOG_DIR" "$RUN_DIR"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_DIR/codespace.log"
 }
-
-# Pre-start: snapshot current data if it exists
-if [ -d "$CODE_DIR/data" ]; then
-    log "Pre-start snapshot ..."
-    bash "$SCRIPTS_DIR/snapshot.sh" "$CPA_TAG" > /dev/null 2>&1 || true
-fi
 
 # Step 1: fetch official code if not present
 if [[ ! -f "$CODE_DIR/wfxl_openai_regst.py" ]]; then
@@ -92,20 +86,29 @@ echo $PID > "$RUN_DIR/openai-cpa.pid"
 log "Started openai-cpa PID=$PID on port $PORT"
 
 # Step 4b: post-start health check + auto-rollback
-sleep 8
+sleep 10
 if ! bash "$SCRIPTS_DIR/health-check.sh" > /dev/null 2>&1; then
     log "WARN: Health check failed after initial start."
-    # Try to rollback to previous known-good tag if available
-    if [ -f "$SNAPSHOT_DIR/latest/tag.txt" ]; then
-        PREV_TAG=$(cat "$SNAPSHOT_DIR/latest/tag.txt")
+    if [ -f "$SNAPSHOT_DIR/tag.txt" ]; then
+        PREV_TAG=$(cat "$SNAPSHOT_DIR/tag.txt")
         if [ "$PREV_TAG" != "$CPA_TAG" ]; then
-            log "Attempting rollback to previous tag $PREV_TAG ..."
+            log "Attempting rollback to previous known-good tag $PREV_TAG ..."
             if bash "$SCRIPTS_DIR/rollback.sh" > /dev/null 2>&1; then
                 log "Rollback to $PREV_TAG completed."
+                # Skip snapshot creation after rollback (snapshot already points to prev)
+                SKIP_SNAPSHOT=true
             else
                 log "ERROR: Rollback failed. Manual intervention required."
             fi
         fi
+    fi
+fi
+
+# Step 4c: snapshot current known-good state (only if engine is healthy)
+if [[ "${SKIP_SNAPSHOT:-false}" != true ]]; then
+    if bash "$SCRIPTS_DIR/health-check.sh" > /dev/null 2>&1; then
+        bash "$SCRIPTS_DIR/snapshot.sh" "$CPA_TAG" > /dev/null 2>&1 || true
+        log "Snapshot saved: $CPA_TAG"
     fi
 fi
 

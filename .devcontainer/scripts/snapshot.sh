@@ -1,37 +1,21 @@
 #!/bin/bash
-# Create a snapshot of current data + tag before upgrade/rebuild
+# Save current data + tag as the single known-good snapshot (overwrites previous)
 set -euo pipefail
 
 CONFIG_DIR="/workspaces/openai-cpa-codespaces"
-SNAPSHOT_DIR="$CONFIG_DIR/.codespaces/snapshots"
+SNAPSHOT_DIR="$CONFIG_DIR/.codespaces/snapshots/latest"
 DATA_DIR="/workspaces/openai-cpa-runtime/data"
 
-mkdir -p "$SNAPSHOT_DIR"
+mkdir -p "$SNAPSHOT_DIR/data"
 
-# Read current tag (fallback to env or file)
-CURRENT_TAG="${1:-}"
-if [ -z "$CURRENT_TAG" ]; then
-    CURRENT_TAG="${CPA_TAG:-v12.0.1}"
-fi
-if [ -f "$SNAPSHOT_DIR/latest/tag.txt" ]; then
-    CURRENT_TAG=$(cat "$SNAPSHOT_DIR/latest/tag.txt")
-fi
+# Read current tag
+CURRENT_TAG="${1:-${CPA_TAG:-v12.0.1}}"
 
-SNAPSHOT_ID=$(date +%Y%m%d-%H%M%S)
-SNAPSHOT_PATH="$SNAPSHOT_DIR/$SNAPSHOT_ID"
-mkdir -p "$SNAPSHOT_PATH/data"
-
-# Backup data
-cp -r "$DATA_DIR/"* "$SNAPSHOT_PATH/data/" 2>/dev/null || true
+# Backup data (overwrite)
+rm -rf "$SNAPSHOT_DIR/data/"*
+cp -r "$DATA_DIR/"* "$SNAPSHOT_DIR/data/" 2>/dev/null || true
 
 # Record tag
-echo "$CURRENT_TAG" > "$SNAPSHOT_PATH/tag.txt"
+echo "$CURRENT_TAG" > "$SNAPSHOT_DIR/tag.txt"
 
-# Update latest symlink
-ln -sfn "$SNAPSHOT_PATH" "$SNAPSHOT_DIR/latest"
-
-# Cleanup old snapshots (keep last 10)
-cd "$SNAPSHOT_DIR"
-ls -1d [0-9]*-[0-9]* 2>/dev/null | sort | head -n -10 | xargs -r rm -rf 2>/dev/null || true
-
-echo "$SNAPSHOT_ID"
+echo "$CURRENT_TAG"

@@ -1,41 +1,28 @@
 #!/bin/bash
-# Rollback openai-cpa to a previous snapshot
+# Rollback openai-cpa to the single latest known-good snapshot
 set -euo pipefail
 
 CONFIG_DIR="/workspaces/openai-cpa-codespaces"
 CODE_DIR="/workspaces/openai-cpa-runtime"
-SNAPSHOT_DIR="$CONFIG_DIR/.codespaces/snapshots"
+SNAPSHOT_DIR="$CONFIG_DIR/.codespaces/snapshots/latest"
 LOG_DIR="$CONFIG_DIR/.codespaces/logs"
 RUN_DIR="$CONFIG_DIR/.codespaces/run"
 PATCH_DIR="$CONFIG_DIR/.devcontainer/patches"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
-SNAPSHOT_ID="${1:-}"
-if [ -z "$SNAPSHOT_ID" ]; then
-    # Use latest snapshot
-    if [ -L "$SNAPSHOT_DIR/latest" ]; then
-        SNAPSHOT_PATH=$(readlink -f "$SNAPSHOT_DIR/latest")
-        SNAPSHOT_ID=$(basename "$SNAPSHOT_PATH")
-    else
-        echo "ERROR: No snapshot found. Usage: rollback.sh <snapshot-id>"
-        exit 1
-    fi
-fi
-
-SNAPSHOT_PATH="$SNAPSHOT_DIR/$SNAPSHOT_ID"
-if [ ! -d "$SNAPSHOT_PATH" ]; then
-    echo "ERROR: Snapshot $SNAPSHOT_PATH not found"
+if [ ! -f "$SNAPSHOT_DIR/tag.txt" ]; then
+    echo "ERROR: No snapshot found. Cannot rollback."
     exit 1
 fi
 
-TARGET_TAG=$(cat "$SNAPSHOT_PATH/tag.txt" 2>/dev/null || echo "v12.0.1")
+TARGET_TAG=$(cat "$SNAPSHOT_DIR/tag.txt")
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_DIR/rollback.log"
 }
 
-log "=== Rollback to $SNAPSHOT_ID (tag: $TARGET_TAG) ==="
+log "=== Rollback to $TARGET_TAG ==="
 
 # 1. Stop current engine
 if [ -f "$RUN_DIR/openai-cpa.pid" ]; then
@@ -76,7 +63,7 @@ rm -rf "$TMP"
 
 # 4. Restore data
 mkdir -p "$CODE_DIR/data"
-cp -r "$SNAPSHOT_PATH/data/"* "$CODE_DIR/data/" 2>/dev/null || true
+cp -r "$SNAPSHOT_DIR/data/"* "$CODE_DIR/data/" 2>/dev/null || true
 
 # 5. Inject config
 if [ -f "$CONFIG_DIR/.devcontainer/config.template.yaml" ] && [ -f "$CONFIG_DIR/.devcontainer/inject-config.py" ]; then
@@ -95,7 +82,7 @@ echo $PID > "$RUN_DIR/openai-cpa.pid"
 log "Started engine PID=$PID"
 
 # 7. Health check
-sleep 5
+sleep 8
 if bash "$CONFIG_DIR/.devcontainer/scripts/health-check.sh" > /dev/null 2>&1; then
     log "SUCCESS: Rollback completed, engine healthy"
 else
