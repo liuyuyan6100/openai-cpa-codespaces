@@ -109,7 +109,7 @@ tail -f /workspaces/openai-cpa-codespaces/.codespaces/logs/auto-start.log
 # 获取 token
 TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/login \
   -H "Content-Type: application/json" \
-  -d '{"password":"admin"}' | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))')
+  -d '{"password": "admin"}' | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))')
 
 # 启动
 curl -s -X POST http://127.0.0.1:8000/api/start \
@@ -146,9 +146,60 @@ grep -cE '注册成功|凭据提取成功' /workspaces/openai-cpa-codespaces/.co
 
 ---
 
-## 5. 故障排查
+## 5. 踩坑记录（必读）
 
-### 5.1 注册一直失败（手机风控 / 403）
+### 坑 1：端口必须默认 public
+
+Codespace 创建后端口默认 private，Web UI 外部无法访问，agent 也无法通过 curl 检查状态。
+
+**解决**：`.devcontainer/devcontainer.json` 中必须设置：
+```json
+"portsAttributes": {
+  "8000": {
+    "visibility": "public"
+  }
+}
+```
+> 以后所有 Codespace 部署默认 public，不再询问。
+
+### 坑 2：重建后配置被模板覆盖
+
+`post-start.sh` 每次重建都会用 `config.template.yaml` + `inject-config.py` 重新生成 `data/config.yaml`。
+如果只在 `data/config.yaml` 里修改（比如切到 freemail 模式），重建后会被覆盖回 `cloudflare_temp_email`。
+
+**血的教训**：曾因此导致 19 次注册全部失败（freemail 配置丢失，邮箱模式不对）。
+
+**解决**：所有配置修改必须走 `.devcontainer/config.template.yaml`，然后 git commit + push。
+
+### 坑 3：monitor.sh 多行 log 导致整数比较失败
+
+`get_today_success()` 函数在特定情况下会输出多行（包含空行），导致 `[ "$today_success" -ge "$MAX_DAILY_SUCCESS" ]` 报 `integer expression expected`。
+
+**解决**：确保 `get_today_success` 始终只输出一个整数。当前版本已修复（通过 `echo "${count:-0}"` 和管道控制）。
+
+### 坑 4：后台启动被拦截
+
+在 Codespace 中直接用 `&` 或 `nohup` 后台启动进程会被 shell/terminal 工具拦截或误判。
+
+**解决**：使用 Python `subprocess.Popen` 启动，或者将启动命令写入独立 shell 脚本再调用。示例如 `post-start.sh` 中的引擎启动方式。
+
+### 坑 5：auto-start-reg.sh 的 `RANDOM_DELAY` 与 monitor 冲突
+
+`auto-start-reg.sh` 启动时有 0-15 分钟随机延迟，但 `monitor.sh` 会在启动后立即开始计时。如果随机延迟较长，monitor 可能在引擎实际启动前就判定超时。
+
+**解决**：当前版本 monitor 已改为"进程存活 + 状态轮询"双保险，不再单纯依赖时间。`REG_CHECK_INTERVAL` 设为 30 分钟，给足启动时间。
+
+### 坑 6：freemail JWT Token 必须通过 Secret 注入
+
+`config.template.yaml` 中的 `api_token` 使用 `${CPA_FREEMAIL_KEY:-fallback}` 语法。如果 Secret 未设置，fallback 是硬编码的旧 token，可能过期。
+
+**解决**：始终通过 `gh secret set CPA_FREEMAIL_KEY -a codespaces` 在仓库级别设置，确保重建后自动注入最新 token。
+
+---
+
+## 6. 故障排查
+
+### 6.1 注册一直失败（手机风控 / 403）
 
 **原因**：Codespace IP 被 OpenAI 标记。
 
@@ -158,7 +209,7 @@ grep -cE '注册成功|凭据提取成功' /workspaces/openai-cpa-codespaces/.co
 gh codespace rebuild -c $(gh codespace list --json name -q '.[0].name')
 ```
 
-### 5.2 freemail 401 Unauthorized
+### 6.2 freemail 401 Unauthorized
 
 **原因**：`CPA_FREEMAIL_KEY`（JWT Token）不匹配或过期。
 
@@ -167,7 +218,7 @@ gh codespace rebuild -c $(gh codespace list --json name -q '.[0].name')
 2. 更新仓库 Secret `CPA_FREEMAIL_KEY`
 3. 重建 Codespace
 
-### 5.3 同步到 Sub2API 失败
+### 6.3 同步到 Sub2API 失败
 
 **原因**：`CPA_SUB2API_KEY` 错误或 Sub2API 服务不可用。
 
@@ -177,7 +228,7 @@ curl -s https://sub2.aiclawonline.website/v1/models \
   -H "Authorization: Bearer $CPA_SUB2API_KEY"
 ```
 
-### 5.4 日上限到了但还想继续
+### 6.4 日上限到了但还想继续
 
 修改 `MAX_DAILY_SUCCESS` 环境变量或临时手动启动：
 ```bash
@@ -186,7 +237,7 @@ MAX_DAILY_SUCCESS=999 bash /workspaces/openai-cpa-codespaces/.devcontainer/auto-
 
 ---
 
-## 6. 配置修改流程
+## 7. 配置修改流程
 
 **严禁直接修改注入后的 `data/config.yaml`**，因为每次重建都会被覆盖。
 
@@ -202,7 +253,7 @@ MAX_DAILY_SUCCESS=999 bash /workspaces/openai-cpa-codespaces/.devcontainer/auto-
 
 ---
 
-## 7. 已知限制
+## 8. 已知限制
 
 - Codespace 有免费额度限制（每月 120 核·小时，2 核实例约 60 小时/月）
 - Codespace 会在 30 分钟无活动后休眠，但 `post-start.sh` 会在恢复时重新启动
@@ -211,7 +262,7 @@ MAX_DAILY_SUCCESS=999 bash /workspaces/openai-cpa-codespaces/.devcontainer/auto-
 
 ---
 
-## 8. 相关文件速查
+## 9. 相关文件速查
 
 | 文件 | 作用 |
 |------|------|
@@ -225,5 +276,6 @@ MAX_DAILY_SUCCESS=999 bash /workspaces/openai-cpa-codespaces/.devcontainer/auto-
 
 ---
 
-*Last updated: 2026-04-23*
+*Last updated: 2026-04-24*
 *Mode: single-thread slow registration (v2)*
+*Secrets: CPA_FREEMAIL_KEY 已设置*
