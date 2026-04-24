@@ -276,6 +276,112 @@ MAX_DAILY_SUCCESS=999 bash /workspaces/openai-cpa-codespaces/.devcontainer/auto-
 
 ---
 
+## 10. 升级与回滚机制
+
+openai-cpa 和 Sub2API 都会频繁升级。每次升级都可能引入 breaking change 或 patch 冲突。
+因此必须有一套**升级前快照 + 失败自动回滚**机制。
+
+### 10.1 快照系统
+
+每次重建或升级前，自动备份 `data.db` + `config.yaml` + 当前 tag：
+
+```
+.codespaces/snapshots/
+  ├── latest/              -> 软链接到最新快照
+  ├── 20260424-020000/     -> 具体快照目录
+  │   ├── data/
+  │   │   ├── data.db
+  │   │   └── config.yaml
+  │   └── tag.txt          -> 当时的 openai-cpa tag
+```
+
+- 保留最近 **10 个**快照，自动清理旧的
+- `latest` 软链接始终指向最近一次快照
+
+手动创建快照：
+```bash
+bash /workspaces/openai-cpa-codespaces/.devcontainer/scripts/snapshot.sh [tag]
+```
+
+### 10.2 运行时升级（不重建 Codespace）
+
+用于快速测试新版，失败可秒级回滚：
+
+```bash
+# 升级到 v13.0.0
+bash /workspaces/openai-cpa-codespaces/.devcontainer/scripts/upgrade.sh v13.0.0
+```
+
+升级流程：
+1. 自动快照当前 data + tag
+2. 停止当前引擎
+3. 拉取新 tag → apply patches
+4. 如果 patch 失败 → 自动回滚
+5. 启动引擎 → health check（60s 超时）
+6. 如果 health check 失败 → **自动回滚到上一个快照**
+7. 成功后更新 `latest` 链接
+
+### 10.3 运行时回滚
+
+```bash
+# 回滚到最近一次快照
+bash /workspaces/openai-cpa-codespaces/.devcontainer/scripts/rollback.sh
+
+# 回滚到指定快照
+bash /workspaces/openai-cpa-codespaces/.devcontainer/scripts/rollback.sh 20260424-020000
+```
+
+### 10.4 重建时自动回滚
+
+`post-start.sh` 在重建时也会：
+1. 启动前自动快照现有 data
+2. 拉取 `CPA_TAG` 并 apply patches
+3. 启动后 8 秒做 health check
+4. 如果 health check 失败且 `latest/tag.txt` 中的旧 tag 不同 → **自动 rollback**
+
+这意味着：即使你把 `CPA_TAG` 改成了一个坏的版本，重建 Codespace 后如果引擎起不来，它会自动尝试回滚到上一个已知的可用 tag。
+
+### 10.5 配置仓库的 Git 分支策略（推荐）
+
+虽然运行时回滚能救命，但最安全的升级方式是**分支隔离**：
+
+```
+main 分支   -> 当前生产环境用的稳定版本
+  ↑
+  |  merge（测试通过后）
+  |
+dev 分支    -> 测试新 tag / 新 patches 的地方
+```
+
+**升级流程**：
+1. 在本地 clone 仓库，切到 `dev` 分支
+2. 修改 `.devcontainer/post-start.sh` 中的 `CPA_TAG` 为新版本
+3. 如果新 tag 需要更新 patches，同步修改 `patches/` 目录
+4. `git commit && git push origin dev`
+5. 在 GitHub 上基于 `dev` 分支**新建一个 Codespace**（测试环境）
+6. 观察测试 Codespace 是否能正常启动、注册、同步
+7. 测试通过后：`git checkout main && git merge dev && git push`
+8. 重建生产 Codespace：`gh codespace rebuild -c <name>`
+
+这样生产 Codespace 永远不会直接踩到新版本的坑。
+
+### 10.6 Sub2API 升级注意事项
+
+Sub2API 是独立部署在 VPS 上的服务（不在 Codespace 中）。如果 Sub2API 升级导致 API 接口变化：
+
+- Codespace 中调用 Sub2API 的 client 代码在 patch `0004` 中
+- 需要更新 patch 以适配新接口
+- Sub2API 本身的数据库/配置回滚需要在 VPS 侧操作（Docker 镜像快照或数据备份）
+
+**建议**：Sub2API 升级前在 VPS 上执行：
+```bash
+docker commit sub2api sub2api:backup-$(date +%s)
+```
+出问题后一键恢复旧镜像。
+
+---
+
 *Last updated: 2026-04-24*
 *Mode: single-thread slow registration (v2)*
 *Secrets: CPA_FREEMAIL_KEY 已设置*
+*Upgrade/rollback: v3*
